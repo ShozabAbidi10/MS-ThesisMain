@@ -4,7 +4,7 @@ This project contains a Mixed-Reality Interface for controlling UAV or Drone.
 The drone pilot will be wearing a Hololens2 that will augment the pilot's vision with a drone hologram and some useful information related to the drone control. The drone pilot will drag and drop the drone hologram to control the drone in the line of sight, and the drone will reach the coordinate of the hologram autonomously.
 
 ## Software Specifications
-Ubuntu 20.04 running inside a Virtual Box \\
+Ubuntu 20.04 running inside a Virtual Box
 ROS Noetic installed in Ubuntu 20.04
 Unity 2020.3.35f1
 Visual Studio 2019
