@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<launch>
+
+	<include file="$(find ros_tcp_endpoint)/launch/endpoint.launch"/>
+	<include file="$(find tello_driver)/launch/tello_node.launch" />
+		
+	<node pkg="thesis_project" name="Tello_Controller" type="Tello_Final_Controller.py" output="screen">
+	</node>
+</launch>
