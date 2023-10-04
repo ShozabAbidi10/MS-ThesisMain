@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.UI;
-using UnityEngine.SceneManagement;
 using OpenCVForUnity.RectangleTrack;
 using OpenCVForUnity.CoreModule;
 using OpenCVForUnity.ObjdetectModule;
@@ -21,9 +20,10 @@ using Microsoft.MixedReality.Toolkit.Input;
 using OpenCVForUnity.VideoModule;
 using OpenCVForUnity.TrackingModule;
 using HoloTracking;
-using UnityEngine.Assertions;
 using OpenCVForUnityExample;
 using JetBrains.Annotations;
+using RosMessageTypes.UnityRoboticsDemo;
+
 
 namespace HoloLensWithOpenCVForUnityExample
 {
@@ -108,6 +108,7 @@ namespace HoloLensWithOpenCVForUnityExample
         /// The detection result.
         /// </summary>
         List<Rect> detectionResult = new List<Rect>();
+        List<Rect> filteredDetectionResult = new List<Rect>();
 
         // Scalar is opencv made data type
         // I think they are using it for color values as scalar as can easily convert to/from Matrix. 
@@ -155,6 +156,10 @@ namespace HoloLensWithOpenCVForUnityExample
         [SerializeField]
         private GameObject RosSubcriberHandler;
         RosSubcriber rosSubscriberHandler;
+
+        [SerializeField]
+        private GameObject RosPublisherHandler;
+        RosPublisher rosPublisherHandler;
 
         private static int _meshPhysicsLayer = 0;
 
@@ -260,11 +265,19 @@ namespace HoloLensWithOpenCVForUnityExample
         public Text videoFPS;
         public Text trackFPS;
         public Text debugStr;
-        public Text OnAirTapAcquiredCheck;
-        public Text CallingLabelObjectsCheck;
-        public Text CallingRayCastCheck;
-        public Text TelloBattery;
 
+        //public Text OnAirTapAcquiredCheck;
+        //[NotNull] public Text CallingLabelObjectsCheck;
+        //[NotNull] public Text CallingRayCastCheck;
+        //[NotNull] public Text droneBoundingBoxGlobalPosition;
+        //[NotNull] public Text redCubeGlobalPosition;
+        //[NotNull] public Text differencePosition;
+
+        [NotNull] public GameObject _Red_cube;  // For image Tracking
+        //[NotNull] public GameObject _Blue_cube; // For Eye Tracking
+        [NotNull] public Text TelloBattery;
+
+        int rectMeanFactor = 10;
 
         #region camshift
 
@@ -308,25 +321,35 @@ namespace HoloLensWithOpenCVForUnityExample
         #endregion
 
         Vector3 handGazePosition;
+        Vector3 EyeGazePosition;
         public float RayCastDistance;
 
-        // Use this for initialization
-        // This is where the program starts..
+
+        /// <summary>
+        /// KALMAN FILTER VARIABLES
+        /// </summary>
+        private KalmanFilterModule eyeKalmanFilter;
+        private KalmanFilterModule imageKalmanFilter;
+
         protected void Start()
         {
-            termination = new TermCriteria(TermCriteria.EPS | TermCriteria.COUNT, 10, 1);
+            // Kalman Filter
+            // Initialize two Kalman filters, one for each source
+            eyeKalmanFilter = new KalmanFilterModule();
+            imageKalmanFilter = new KalmanFilterModule();
 
+            termination = new TermCriteria(TermCriteria.EPS | TermCriteria.COUNT, 10, 1);
             initialRect = new Rect(0, 0, 0, 0);
 
-            OnAirTapAcquiredCheck.text = string.Format("initialized");
-            CallingLabelObjectsCheck.text = string.Format("initialized");
-            CallingRayCastCheck.text = string.Format("initialized");
+            //OnAirTapAcquiredCheck.text = string.Format("initialized");
+            //CallingLabelObjectsCheck.text = string.Format("initialized");
+            //CallingRayCastCheck.text = string.Format("initialized");
             TelloBattery.text = string.Format("initialized");
 
             // Setting the default values of all toggle fields. [NOT REALLY USING THIS]
-            enableDownScaleToggle.isOn = enableDownScale;
-            useSeparateDetectionToggle.isOn = useSeparateDetection;
-            displayCameraImageToggle.isOn = displayCameraImage;
+            //enableDownScaleToggle.isOn = enableDownScale;
+            //useSeparateDetectionToggle.isOn = useSeparateDetection;
+            //displayCameraImageToggle.isOn = displayCameraImage;
 
             inputSystem = CoreServices.InputSystem;
 
@@ -335,6 +358,7 @@ namespace HoloLensWithOpenCVForUnityExample
             webCamTextureToMatHelper = gameObject.GetComponent<HLCameraStreamToMatHelper>();
             rayCastAndLabelHandler = RayCastAndLabelHandler.GetComponent<RayCastAndLabel>();
             rosSubscriberHandler = RosSubcriberHandler.GetComponent<RosSubcriber>();
+            rosPublisherHandler = RosPublisherHandler.GetComponent<RosPublisher>();
 
 #if WINDOWS_UWP && !DISABLE_HOLOLENSCAMSTREAM_API
             // I know what this is..
@@ -368,19 +392,17 @@ namespace HoloLensWithOpenCVForUnityExample
                 {
                     regionOfInterestSelected = false;
                     camShiftInitialization = false;
-                    OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
+                    //OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
                     //Debug.Log($"Recieved AirTap Gesture. regionOfInterestSelected {regionOfInterestSelected}");
                 }
                 else
                 {
                     regionOfInterestSelected = true;
                     camShiftInitialization = true;
-                    OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
+                    //OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
                     //Debug.Log($"Recieved AirTap Gesture. regionOfInterestSelected {regionOfInterestSelected}");
                 }
             }
-            
-            //LabelObjects(CopyCameraTransForm());
             
 #else
             if (!_UIObject.activeInHierarchy)
@@ -389,19 +411,18 @@ namespace HoloLensWithOpenCVForUnityExample
                 {
                     regionOfInterestSelected = false;
                     camShiftInitialization = false;
-                    OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
+                    //OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
                     //Debug.Log($"Recieved AirTap Gesture. regionOfInterestSelected {regionOfInterestSelected}");
                 }
                 else
                 {
                     regionOfInterestSelected = true;
                     camShiftInitialization = true;
-                    OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
+                    //OnAirTapAcquiredCheck.text = string.Format("Recieved AirTap Gesture. regionOfInterestSelected {0}", regionOfInterestSelected);
                     //Debug.Log($"Recieved AirTap Gesture. regionOfInterestSelected {regionOfInterestSelected}");
                 }
             }
             //Debug.Log($"Recieved AirTap Gesture. Creating Label.");
-            //LabelObjects(CopyCameraTransForm());
 #endif
         }
 
@@ -600,12 +621,12 @@ namespace HoloLensWithOpenCVForUnityExample
                     
                     // Here I can run CamShift Algorithm once the region of interest is selected which I can control through bool variable.
 
-                    // DOING IT OUTSIDE TREAD:
+                    // DOING IT OUTSIDE TREAD: 450 x - 225 y
 
-                    initialRect.width = (int)Math.Floor(100*widthRatio);
-                    initialRect.height = (int)Math.Floor(50*heigthRatio);
-                    initialRect.x = (hsvMat.width() / 2) - (initialRect.width / 2);
-                    initialRect.y = (hsvMat.height() / 2) - (initialRect.height / 2);
+                    initialRect.width = (int)Math.Floor(100 * widthRatio);
+                    initialRect.height = (int)Math.Floor(50 * heigthRatio);
+                    initialRect.x = (hsvMat.width() / 2) - (initialRect.width);
+                    initialRect.y = (hsvMat.height() / 2) - (initialRect.height);
 
                     if (regionOfInterestSelected)
                     {
@@ -626,20 +647,6 @@ namespace HoloLensWithOpenCVForUnityExample
                             else
                                 Debug.LogError("initialRect is Null");
 
-
-                            // Using KCF
-
-                            /*if (tracker != null)
-                            {
-                                tracker.Dispose();
-                                tracker = null;
-                            }
-                            
-                            // Initialize the KCF tracker
-                            tracker = TrackerKCF.create(new TrackerKCF_Params());
-                            tracker.init(grayMat4Thread, roiRect);
-                            Debug.Log($"Initialized KCF..");*/
-
                             // Here we can start camshift algorithm. As we have the rect roi. 
                             if (roiHistMat != null)
                             {
@@ -657,25 +664,19 @@ namespace HoloLensWithOpenCVForUnityExample
                         }
                         else 
                         {
-                            // update the tracker
-                          /*tracker.update(grayMat4Thread, roiRect);
-
-                            if (detectionResult.Count > 0)
-                                detectionResult[0] = roiRect;
-                            else
-                                detectionResult.Add(roiRect);
-                            Debug.Log($"Current KCF Track Rect: {roiRect}, RectListLen: {detectionResult.Count}");*/
-
                             using (Mat backProj = new Mat())
                             {
                                 Imgproc.calcBackProject(new List<Mat>(new Mat[] { grayMat4Thread }), new MatOfInt(0), roiHistMat, backProj, new MatOfFloat(0, 256), 1.0);
                                 RotatedRect rotatedRect = Video.CamShift(backProj, roiRect, termination);
+                                
+                                detectionResult.Add(rotatedRect.boundingRect());
 
-                                if (detectionResult.Count > 0)
-                                    detectionResult[0] = rotatedRect.boundingRect();
-                                else
-                                    detectionResult.Add(rotatedRect.boundingRect());
-                                //Debug.Log($"Current Track Rect: {rotatedRect.boundingRect()}, RectListLen: {detectionResult.Count}");
+                                Debug.Log($"detectionResult.Count: {detectionResult.Count}");
+                                if (detectionResult.Count > 10)
+                                {
+                                    detectionResult.RemoveAt(0);
+                                    Debug.Log($"detectionResult.Count: {detectionResult.Count}");
+                                }
                             }
                         }
                     }
@@ -722,7 +723,7 @@ namespace HoloLensWithOpenCVForUnityExample
                 // draw face rect.
                 if(regionOfInterestSelected)
                 {
-                    DrawDownScaleFaceRects(grayMat, detectionResult.ToArray(), DOWNSCALE_RATIO, COLOR_WHITE, 2);
+                    DrawDownScaleFaceRects(grayMat, GetFilteredDetectionResult().ToArray(), DOWNSCALE_RATIO, COLOR_WHITE, 2);
                 }
                 else
                 {
@@ -806,7 +807,7 @@ namespace HoloLensWithOpenCVForUnityExample
 
                 // Position the canvas object slightly in front
                 // of the real world web camera.
-                Vector3 position = cameraToWorldMatrix.GetColumn(3) - cameraToWorldMatrix.GetColumn(2) * 2.2f;
+                Vector3 position = cameraToWorldMatrix.GetColumn(3) - cameraToWorldMatrix.GetColumn(2) * 2.8f;
 
                 // Rotate the canvas object so that it faces the user.
                 Quaternion rotation = Quaternion.LookRotation(-cameraToWorldMatrix.GetColumn(2), cameraToWorldMatrix.GetColumn(1));
@@ -824,6 +825,8 @@ namespace HoloLensWithOpenCVForUnityExample
 
         private void Update()
         {
+
+            
             lock (ExecuteOnMainThread)
             {
                 while (ExecuteOnMainThread.Count > 0)
@@ -831,8 +834,9 @@ namespace HoloLensWithOpenCVForUnityExample
                     ExecuteOnMainThread.Dequeue().Invoke();
                 }
             }
+
+            trackBoundingBox();
             
-            //GetHandRayPosition();
         }
 
         private void Enqueue(Action action)
@@ -881,6 +885,9 @@ namespace HoloLensWithOpenCVForUnityExample
                 {
                     isDetecting = true;
 
+                    trackBoundingBox();
+
+
                     //Debug.Log($"grayMat size: {grayMat.size()}");
                     downScaleMat.copyTo(grayMat4Thread);
                     StartThread(ThreadWorker);
@@ -888,8 +895,8 @@ namespace HoloLensWithOpenCVForUnityExample
                     // DOING IT OUTSIDE TREAD:
                     initialRect.width = (int)Math.Floor(100*widthRatio);
                     initialRect.height = (int)Math.Floor(50*heigthRatio);
-                    initialRect.x = (hsvMat.width() / 2) - (initialRect.width / 2);
-                    initialRect.y = (hsvMat.height() / 2) - (initialRect.height / 2);
+                    initialRect.x = (hsvMat.width() / 2) - (initialRect.width);
+                    initialRect.y = (hsvMat.height() / 2) - (initialRect.height);
 
                     //DetectObject(grayMat4Thread, out detectionResult, cascade4Thread);
                     // Here I can run CamShift Algorithm once the region of interest is selected which I can control through bool variable.
@@ -913,20 +920,6 @@ namespace HoloLensWithOpenCVForUnityExample
                             else
                                 Debug.LogError("initialRect is Null");
 
-
-                            // Using KCF
-
-                            /*if (tracker != null)
-                            {
-                                tracker.Dispose();
-                                tracker = null;
-                            }
-
-                            // Initialize the KCF tracker
-                            tracker = TrackerKCF.create(new TrackerKCF_Params());
-                            tracker.init(grayMat4Thread, roiRect);
-                            Debug.Log($"Initialized KCF..");*/
-
                             // Here we can start camshift algorithm. As we have the rect roi. 
                             if (roiHistMat != null)
                             {
@@ -944,31 +937,18 @@ namespace HoloLensWithOpenCVForUnityExample
                         }
                         else 
                         {
-                            /*// update the tracker
-                            tracker.update(grayMat4Thread, roiRect);
-
-                            if (detectionResult.Count > 0)
-                                detectionResult[0] = roiRect;
-                            else
-                                detectionResult.Add(roiRect);
-                            Debug.Log($"Current KCF Track Rect: {roiRect}, RectListLen: {detectionResult.Count}");*/
-
                             using (Mat backProj = new Mat())
                             {
                                 Imgproc.calcBackProject(new List<Mat>(new Mat[] { grayMat4Thread }), new MatOfInt(0), roiHistMat, backProj, new MatOfFloat(0, 256), 1.0);
                                 RotatedRect rotatedRect = Video.CamShift(backProj, roiRect, termination);
 
-                                if (detectionResult.Count > 0)
-                                    detectionResult[0] = rotatedRect.boundingRect();
-                                else
-                                    detectionResult.Add(rotatedRect.boundingRect());
-                                Debug.Log($"Current Track Rect: {rotatedRect.boundingRect()}, Rect centre: {rotatedRect.center}");
-                                double diff_x = rotatedRect.center.x - grayMat4Thread.width()/2;
-                                double diff_y = rotatedRect.center.y - grayMat4Thread.height() / 2;
-                                Debug.Log($"(diff_x, diff_y) = ({diff_x}, {diff_y})");
-                                double drone_pos_x = gameObject.transform.position.x + diff_x;
-                                double drone_pos_y = gameObject.transform.position.y + diff_y;
-                                _drone_model.transform.position = new Vector3((float)drone_pos_x, (float)drone_pos_y, gameObject.transform.position.z);
+                                detectionResult.Add(rotatedRect.boundingRect());
+                                Debug.Log($"detectionResult.Count: {detectionResult.Count}");
+                                if (detectionResult.Count > 10)
+                                {
+                                    detectionResult.RemoveAt(0);
+                                    Debug.Log($"detectionResult.Count: {detectionResult.Count}");
+                                }
                             }
                         }
                     }
@@ -999,7 +979,8 @@ namespace HoloLensWithOpenCVForUnityExample
                     
                     if(regionOfInterestSelected)
                     {
-                        DrawDownScaleFaceRects(grayMat, detectionResult.ToArray(), DOWNSCALE_RATIO, COLOR_WHITE, 2);
+                        //Debug.Log($"Bounding Box Mean: {GetFilteredDetectionResult()}");
+                        DrawDownScaleFaceRects(grayMat, GetFilteredDetectionResult().ToArray(), DOWNSCALE_RATIO, COLOR_WHITE, 2);
                     }
                     else
                     {
@@ -1066,7 +1047,7 @@ namespace HoloLensWithOpenCVForUnityExample
                 
                 // Position the canvas object slightly in front
                 // of the real world web camera.
-                Vector3 position = cameraToWorldMatrix.GetColumn(3) - cameraToWorldMatrix.GetColumn(2) * 2.2f;
+                Vector3 position = cameraToWorldMatrix.GetColumn(3) - cameraToWorldMatrix.GetColumn(2) * 2.8f;
 
                 // Rotate the canvas object so that it faces the user.
                 Quaternion rotation = Quaternion.LookRotation(-cameraToWorldMatrix.GetColumn(2), cameraToWorldMatrix.GetColumn(1));
@@ -1279,7 +1260,8 @@ namespace HoloLensWithOpenCVForUnityExample
         }
 
         /// <summary>
-        /// Raises the enable downscale toggle value changed event.
+        /// Raises the 
+        /// downscale toggle value changed event.
         /// </summary>
         public void OnEnableDownScaleToggleValueChanged()
         {
@@ -1344,41 +1326,156 @@ namespace HoloLensWithOpenCVForUnityExample
             }
         }
 
-        //public void LabelObjects(Mat imageMatrix, Transform cameraTransform)
-        public void LabelObjects(Transform cameraTransform)
+        private void GetEyeRayPosition()
         {
-            CallingLabelObjectsCheck.text = string.Format("Inside LabelObjects..");
-            ClearLabels();
-            ////var heightFactor = imageMatrix.height() / imageMatrix.width();
-            /*var topCorner = cameraTransform.position + cameraTransform.forward -
-                            cameraTransform.right / 2f +
-                            cameraTransform.up * heightFactor / 2f;*/
-
-            //var recognizedPos = topCorner + cameraTransform.right * imageCenter.x -
-            //                                cameraTransform.up * imageCenter.y * heightFactor;
-
-
-            CallingLabelObjectsCheck.text = string.Format("handGazePosition {0}", handGazePosition);
-            var recognizedPos = cameraTransform.position + handGazePosition;
-            //var recognizedPos = cameraTransform.position + gameObject.transform.position;
-
-            /*#if UNITY_EDITOR
-                        _createdObjects.Add(CreateLabel(_labelText, handGazePosition));
-            #endif*/
-            CallingRayCastCheck.text = string.Format("CallingRayCastCheck: Calling..");
-            var labelPos = DoRaycastOnSpatialMap(cameraTransform, recognizedPos);
-            if (labelPos != null)
+            
+            if(CoreServices.InputSystem.EyeGazeProvider.HitPosition != null)
             {
-                Debug.Log($"LabelPos : {labelPos.Value}");
-                _createdObjects.Add(CreateLabel(_labelText, labelPos.Value));
+                EyeGazePosition = CoreServices.InputSystem.EyeGazeProvider.HitPosition;
             }
             else
             {
-                CallingRayCastCheck.text = $"LabelPos is NULL.";
+                Debug.Log($"EyeGazePosition : null");
+            }
+
+        }
+
+        //public void LabelObjects(Mat imageMatrix, Transform cameraTransform)
+        public void LabelObjects(Transform cameraTransform, Vector3 BBglobalPosition)
+        {
+            //CallingLabelObjectsCheck.text = string.Format("Inside LabelObjects..");
+            ClearLabels();
+
+            //CallingLabelObjectsCheck.text = string.Format("handGazePosition {0}", handGazePosition);
+            //Vector3 recognizedPos = cameraTransform.position + BBglobalPosition;
+
+            //CallingRayCastCheck.text = string.Format("CallingRayCastCheck: Calling..");
+            var labelPos = DoRaycastOnSpatialMap(cameraTransform, BBglobalPosition);
+            if (labelPos != null)
+            {
+                //Debug.Log($"LabelPos : {labelPos.Value}");
+
+                //Calling the function which will do some post processing on the estimated position of the drone. Just to see if
+                // it make sense.
+                ObjectPositionPostProcessing(labelPos.Value);
+
+                // To make a label
+                //_createdObjects.Add(CreateLabel(_labelText, labelPos.Value));
+            }
+            else
+            {
+                //CallingRayCastCheck.text = $"LabelPos is NULL.";
                 Debug.Log("LabelPos is NULL");
             }
 
             Destroy(cameraTransform.gameObject);
+        }
+
+        public List<Rect> GetFilteredDetectionResult()
+        {
+            if(detectionResult.Count == 10)
+            {
+                Rect mean_rect = CalculateMeanRect(detectionResult);
+                if(mean_rect.width > 0f && mean_rect.height > 0f)
+                    return new List<Rect> { mean_rect };
+            }
+            return detectionResult;
+        }
+
+        public Rect CalculateMeanRect(List<Rect> rectList)
+        {
+            if (rectList.Count == 0)
+            {
+                Debug.LogError("The rectList is empty.");
+                return new Rect(0,0,0,0);
+            }
+
+            float totalX = 0f;
+            float totalY = 0f;
+            float totalWidth = 0f;
+            float totalHeight = 0f;
+
+            foreach (Rect rect in rectList)
+            {
+                totalX += rect.x;
+                totalY += rect.y;
+                totalWidth += rect.width;
+                totalHeight += rect.height;
+            }
+
+            float meanX = totalX / rectList.Count;
+            float meanY = totalY / rectList.Count;
+            float meanWidth = totalWidth / rectList.Count;
+            float meanHeight = totalHeight / rectList.Count;
+
+            return new Rect((int)meanX, (int)meanY, (int)meanWidth, (int)meanHeight);
+        }
+
+        /// <summary>
+        /// This function do the post-processing on the estimated value of drone position.
+        /// </summary>
+        /// <param name="estimatedObjectPosition"></param>
+        public void ObjectPositionPostProcessing(Vector3 estimatedBBPosition)
+        {
+            // not doing any processing right now.
+            if(estimatedBBPosition.z <= 5.0f)
+            {
+                _Red_cube.transform.position = new Vector3(estimatedBBPosition.x, estimatedBBPosition.y, _Red_cube.transform.position.z);
+                Debug.Log($"TrackingEstPosition : {_Red_cube.transform.position}");
+
+                //_Blue_cube.transform.position = new Vector3(EyeGazePosition.x, EyeGazePosition.y, _Blue_cube.transform.position.z);
+                //Debug.Log($"EyeEstPosition: {_Blue_cube.transform.position}");
+
+                // This will be assign to Kalman Filter Result. This way I can compare both tracking sources result individually and their fusion
+                // product together.
+
+                //KALMAN FILTER:
+
+                // Get the position data from image tracking and eye tracking
+                Vector3 imageTrackingMeasurement = new Vector3(estimatedBBPosition.x, estimatedBBPosition.y, _drone_model.transform.position.z);
+                Debug.Log($"imageTrackingMeasurement : {imageTrackingMeasurement}");
+
+                Vector3 eyeTrackingMeasurement = new Vector3(EyeGazePosition.x, EyeGazePosition.y, _drone_model.transform.position.z);
+                Debug.Log($"eyeTrackingMeasurement: {eyeTrackingMeasurement}");
+
+/*                // Apply the Kalman filter to each measurement
+                Vector3 imageTrackingFiltered = imageKalmanFilter.ApplyFilter(imageTrackingMeasurement);
+                Vector3 eyeTrackingFiltered = eyeKalmanFilter.ApplyFilter(eyeTrackingMeasurement);*/
+
+                // Average the results to get the final position estimate
+                //Vector3 estimatedPosition = eyeTrackingMeasurement;
+                //Debug.Log($"KalmanFilterResult: {estimatedPosition}");
+
+                //_drone_model.transform.position = estimatedPosition;
+                Debug.Log($"droneModelPosition: {_drone_model.transform.position}");
+                
+                PublishCurrentGoalMsgs(imageTrackingMeasurement, _drone_model.transform.position);
+            }
+        }
+
+        public void PublishCurrentGoalMsgs(Vector3 CurrentDronePos, Vector3 CurrentTargetPos)
+        {
+            CurrentDronePoseMsg current_drone_pos = new CurrentDronePoseMsg(
+                CurrentDronePos.x,
+                CurrentDronePos.y,
+                CurrentDronePos.z,
+                0.0f,
+                0.0f,
+                0.0f,
+                0.0f
+                );
+            
+            TargetPoseMsg current_target_pos = new TargetPoseMsg(
+                CurrentTargetPos.x,
+                CurrentTargetPos.y,
+                CurrentTargetPos.z,
+                0.0f,
+                0.0f,
+                0.0f,
+                0.0f
+                );
+
+            rosPublisherHandler.PublishTargetMsg(current_drone_pos, current_target_pos);
         }
 
         /// <summary>
@@ -1395,17 +1492,60 @@ namespace HoloLensWithOpenCVForUnityExample
             return g.transform;
         }
 
+        public void trackBoundingBox()
+        {
+            if (detectionResult.Count > 0 && grayMat4Thread != null && !camShiftInitialization && regionOfInterestSelected)
+            {
+                float heightFactor = (float)grayMat4Thread.height() / (float)(grayMat4Thread.width());
+                //OnAirTapAcquiredCheck.text = string.Format("heightFactor: {0}", heightFactor);
 
+                Vector3 topCorner = (CopyCameraTransForm().position + (CopyCameraTransForm().forward * 2.8f)) -
+                                ((CopyCameraTransForm().right * 3.0f) / 2.0f) +
+                                ((CopyCameraTransForm().up * 3.0f * heightFactor) / 2.0f);
+                //CallingLabelObjectsCheck.text = string.Format("topCorner: {0}", topCorner);
+
+                Vector3 bottomCorner = (CopyCameraTransForm().position + (CopyCameraTransForm().forward * 2.8f)) +
+                                ((CopyCameraTransForm().right * 3.0f) / 2.0f) -
+                                ((CopyCameraTransForm().up * 3.0f * heightFactor) / 2.0f);
+                //CallingRayCastCheck.text = string.Format("bottomCorner: {0}", bottomCorner);
+
+                Vector3 recognizedPos = topCorner + (CopyCameraTransForm().right * (float)(getRectCenter(detectionResult[0]).x) * 0.0035f) -
+                            (CopyCameraTransForm().up * (float)(getRectCenter(detectionResult[0]).y) * 0.0035f * heightFactor);
+
+                recognizedPos.x = recognizedPos.x - 0.1f;
+                recognizedPos.y = recognizedPos.y - 0.5f; // test and check if its fine or not
+                //Debug.Log($"BB GlobalPos(x,y,z): {recognizedPos}");
+
+                // Calling LabelObject function to estimate the z-axis of the drone object.
+                GetEyeRayPosition();
+                //LabelObjects(CopyCameraTransForm(),recognizedPos);
+                ObjectPositionPostProcessing(recognizedPos);
+
+            }
+        }
+
+        public Point getRectCenter(Rect rect)
+        {
+            Point p = new Point
+            {
+                x = (rect.x + rect.width / 2),
+                y = (rect.y + rect.height / 2)
+            };
+            //Debug.Log($"Bounding Box centre (x, y): {p.x}, {p.y}");
+            return p;
+        }
+
+        // Here '?' after Vector3 means that this function can return the null value as well.
         public Vector3? DoRaycastOnSpatialMap(Transform cameraTransform, Vector3 recognitionCenterPos)
         {
             //Debug.Log("Inside DoRaycastOnSpatialMap()");
             RaycastHit hitInfo;
 
             //if (Physics.Raycast(cameraTransform.position, (recognitionCenterPos - cameraTransform.position), out hitInfo, 15f, GetSpatialMeshMask()))
-            if (Physics.Raycast(cameraTransform.position, (handGazePosition - cameraTransform.position).normalized, out hitInfo, 15f, GetSpatialMeshMask()))
+            if (Physics.Raycast(cameraTransform.position, (recognitionCenterPos - cameraTransform.position).normalized, out hitInfo, 10f, GetSpatialMeshMask()))
             {
                 //return hitPoint ?? CalculatePositionDeadAhead(15f);
-                CallingRayCastCheck.text = ($"Dist: {hitInfo.distance}");
+                //CallingRayCastCheck.text = ($"Drone EstPos: {hitInfo.point}");
                 RayCastDistance = hitInfo.distance;
                 return hitInfo.point;
             }
@@ -1469,7 +1609,7 @@ namespace HoloLensWithOpenCVForUnityExample
             return labelObject;
         }
 
-        public static Vector3 CalculatePositionDeadAhead(float distance = 15)
+        public static Vector3 CalculatePositionDeadAhead(float distance = 10)
         {
             return CameraCache.Main.transform.position +
                    CameraCache.Main.transform.forward.normalized * distance;
